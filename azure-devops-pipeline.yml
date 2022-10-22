@@ -1,5 +1,20 @@
 trigger:
-- main
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - docs/*
+      - README.md
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - docs/*
+      - README.md
 
 resources:
 - repo: self
@@ -12,15 +27,125 @@ variables:
   containerRegistry: 'acryouverifydev.azurecr.io'
   dockerfilePath: '**/Dockerfile'
   tag: '$(Build.BuildId)'
-  imagePullSecret: 'acryouverifydev1755e8d5-auth'
-
-  # Agent VM image name
-  vmImageName: 'ubuntu-latest'
+  imagePullSecret: '$(acrimagepullsecret)'
+  nodeJsVersion: '14.x'
+  workDir: './'
+  vmImageName: 'ubuntu-18.04'
+  isPr: $[eq(variables['Build.Reason'], 'PullRequest')]
+  isMain: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]
+  #vmImageName: 'ubuntu-latest'
   
 
 stages:
+### Testing
+- stage: RunLinters
+  displayName: Run Linters
+  dependsOn: []
+  condition: eq(variables.isMain, True)
+  jobs:
+  - job: 'RunCodeLinters'
+    displayName: 'Run Code Linters'
+    pool:
+      vmImage: $(vmImageName)
+
+    steps:
+    - checkout: self
+      clean: true
+
+    - task: NodeTool@0
+      inputs:
+        versionSpec: $(nodeJsVersion)
+      displayName: 'Install Node.js'
+
+    - task: Npm@1
+      displayName: 'Npm cache verify'
+      inputs:
+        workingDir: $(workDir)
+        command: custom
+        customCommand: cache verify
+
+    - task: Npm@1
+      displayName: 'Npm ci'
+      inputs:
+        workingDir: $(workDir)
+        command: custom
+        customCommand: ci
+
+    - task: Npm@1
+      displayName: 'Npm eslint'
+      inputs:
+        workingDir: $(workDir)
+        command: custom
+        customCommand: run eslint
+
+- stage: RunTests
+  displayName: Run Tests
+  dependsOn: [RunLinters]
+  condition: xor(eq(variables.isPr, True), eq(variables.isMain, True))
+  jobs:
+  - job: 'RunCodeTesting'
+    displayName: 'Run Code Testing'
+    pool:
+      vmImage: $(vmImageName)
+
+    steps:
+    - checkout: self
+      clean: true
+
+    - task: NodeTool@0
+      inputs:
+        versionSpec: $(nodeJsVersion)
+      displayName: 'Install Node.js'
+
+    - task: Npm@1
+      displayName: 'Npm cache verify'
+      inputs:
+        workingDir: $(workDir)
+        command: custom
+        customCommand: cache verify
+
+    - task: Npm@1
+      displayName: 'Npm ci'
+      inputs:
+        workingDir: $(workDir)
+        command: custom
+        customCommand: ci
+
+    - task: Npm@1
+      displayName: 'Npm tests'
+      inputs:
+        workingDir: $(workDir)
+        command: custom
+        customCommand: run test-ci
+
+    - task: PublishTestResults@2
+      displayName: 'Publish unit test results'
+      condition: succeededOrFailed()
+      inputs:
+        testRunTitle: Angular
+        testResultsFormat: JUnit
+        testResultsFiles: "**/TESTS*.xml"
+
+    - task: PublishCodeCoverageResults@1
+      inputs:
+        codeCoverageTool: 'Cobertura'
+        summaryFileLocation: '$(Build.SourcesDirectory)/coverage/**/*.xml'
+      condition: and(succeeded(), not(contains(variables['COMMANDS'],'"test":[]')))
+
+    - task: CopyFiles@2
+      displayName: 'Copy code coverage results'
+      inputs:
+        sourceFolder: ./coverage
+        contents: 'lcov.info'
+        targetFolder: '$(Build.ArtifactStagingDirectory)/'
+
+    - publish: '$(Build.ArtifactStagingDirectory)/lcov.info'
+      displayName: 'Publish coverage results'
+      artifact: code_coverage
+
 - stage: Build
   displayName: Build stage
+  dependsOn: [RunTests]
   jobs:  
   - job: Build
     displayName: Build
